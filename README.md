@@ -27,7 +27,7 @@
 
 ## Add to MetaMask
 
-**One click:** [Add via Chainlist](https://chainlist.org/?search=778889) *(after PR #2830 merges)*
+**One click:** [Add via Chainlist](https://chainlist.org/?search=778889)
 
 **Manual:**
 
@@ -54,7 +54,7 @@ cp .env.miner.example .env.miner
 python miner/usst_miner.py
 ```
 
-**GPU mining** (NVIDIA CUDA): ~686 MH/s on RTX 4060  
+**GPU mining** (NVIDIA CUDA): ~590 MH/s on RTX 4060  
 **CPU mining**: works on any machine
 
 Mining algorithm: `keccak256(miner_address, nonce, work_block)`  
@@ -66,11 +66,12 @@ Contract: [`contracts/USSTMine.sol`](contracts/USSTMine.sol)
 
 | Registry | Status | Link |
 |----------|--------|------|
-| ethereum-lists/chains | ⏳ Pending merge | [PR #8418](https://github.com/ethereum-lists/chains/pull/8418) |
-| DefiLlama Chainlist | ⏳ Pending merge | [PR #2830](https://github.com/DefiLlama/chainlist/pull/2830) |
-| wevm/viem | ⏳ Pending merge | [PR #4721](https://github.com/wevm/viem/pull/4721) |
+| ethereum-lists/chains | ✅ Merged | [PR #8418](https://github.com/ethereum-lists/chains/pull/8418) |
+| DefiLlama Chainlist | ✅ Merged | [PR #2830](https://github.com/DefiLlama/chainlist/pull/2830) |
+| wevm/viem | ⏳ Pending review | [PR #4721](https://github.com/wevm/viem/pull/4721) |
+| blockscout/chainscout | ⏳ Pending review | [PR #242](https://github.com/blockscout/chainscout/pull/242) |
 
-Once merged: auto-discoverable in **MetaMask**, **WalletConnect**, **Rainbow**, **wagmi**, **chainid.network**
+Auto-discoverable in **MetaMask**, **WalletConnect**, **Rainbow**, **wagmi**, **chainid.network**
 
 ---
 
@@ -122,9 +123,9 @@ Internet → VPS (147.45.143.23)
 
 - [x] Mainnet launch
 - [x] Public HTTPS RPC + block explorer
-- [x] GPU miner (NVIDIA CUDA ~686 MH/s)
+- [x] GPU miner (NVIDIA CUDA ~590 MH/s, double-buffer optimized)
 - [x] Open-source repository
-- [x] Chain registry submissions (ethereum-lists, Chainlist, viem)
+- [x] Chain registry submissions (ethereum-lists ✅, Chainlist ✅, viem ⏳, blockscout ⏳)
 - [x] GitHub CI health checks
 - [ ] DEX listing (Uniswap v2 fork on-chain)
 - [ ] Bridge to Ethereum mainnet

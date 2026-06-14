@@ -29,10 +29,7 @@ from miner.gpu_engine import GPUSearcher, create_gpu_searcher, hash_work
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DEPLOYED = Path(os.getenv("USST_DEPLOYED_PATH", str(ROOT / "deployed.json")))
 
-DEFAULT_MINER_KEY = os.getenv(
-    "USST_MINER_KEY",
-    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
-)
+DEFAULT_MINER_KEY = os.getenv("USST_MINER_KEY", "")
 
 USST_MINE_ABI = [
     {
@@ -153,13 +150,26 @@ def build_status(
     table.add_row("Total mined", str(total_mined))
     table.add_row("Session hashes", f"{session_hashes:,}")
     table.add_row("Blocks found", str(blocks_found))
-    table.add_row("Hashrate", f"{hashrate:,.0f} H/s")
+    mhs = hashrate / 1_000_000
+    if mhs >= 1:
+        hr_str = f"{mhs:,.2f} MH/s"
+    elif hashrate >= 1000:
+        hr_str = f"{hashrate / 1000:,.1f} KH/s"
+    else:
+        hr_str = f"{hashrate:,.0f} H/s"
+    table.add_row("Hashrate", hr_str)
     table.add_row("Current nonce", f"{current_nonce:,}")
     return table
 
 
 def work_block_stale(w3: Web3, work_block: int) -> bool:
     return w3.eth.block_number - work_block > _WORK_BLOCK_MAX_AGE
+
+
+def _gas_price_with_buffer(w3: Web3) -> int:
+    """Gas price with a 20 % buffer to avoid underpriced-tx rejections."""
+    base = w3.eth.gas_price
+    return max(base * 6 // 5, 1_000_000_000)  # +20%, minimum 1 gwei
 
 
 def submit_mine_sync(
@@ -170,6 +180,8 @@ def submit_mine_sync(
     pow_nonce: int,
     work_block: int,
     console: Console,
+    *,
+    max_retries: int = 2,
 ) -> bool:
     """Submit mine() synchronously after final on-chain checks."""
     if work_block_stale(w3, work_block):
@@ -183,22 +195,26 @@ def submit_mine_sync(
         console.print("[yellow]verifyWork failed before submit, continuing…[/yellow]")
         return False
 
-    try:
-        tx = contract.functions.mine(pow_nonce, work_block).build_transaction(
-            {
-                "from": miner.address,
-                "nonce": w3.eth.get_transaction_count(miner.address, "pending"),
-                "chainId": chain_id,
-                "gas": 200_000,
-                "gasPrice": w3.eth.gas_price,
-            }
-        )
-        signed = miner.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    except Exception as exc:
-        console.print(f"[red]Transaction error: {exc}[/red]")
-        return False
+    for attempt in range(1, max_retries + 1):
+        try:
+            tx = contract.functions.mine(pow_nonce, work_block).build_transaction(
+                {
+                    "from": miner.address,
+                    "nonce": w3.eth.get_transaction_count(miner.address, "pending"),
+                    "chainId": chain_id,
+                    "gas": 200_000,
+                    "gasPrice": _gas_price_with_buffer(w3),
+                }
+            )
+            signed = miner.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+            break
+        except Exception as exc:
+            console.print(f"[red]Transaction error (attempt {attempt}/{max_retries}): {exc}[/red]")
+            if attempt == max_retries:
+                return False
+            time.sleep(1)
 
     if receipt.status != 1:
         console.print("[yellow]Transaction reverted, continuing…[/yellow]")
@@ -236,6 +252,9 @@ def main() -> int:
         console.print("[red]Cannot connect to RPC. Start node: docker compose up -d[/red]")
         return 1
 
+    if not args.private_key:
+        console.print("[red]USST_MINER_KEY env var or --private-key is required[/red]")
+        return 1
     miner = Account.from_key(args.private_key)
     contract = w3.eth.contract(
         address=Web3.to_checksum_address(config["contractAddress"]),
@@ -262,8 +281,7 @@ def main() -> int:
 
     session_hashes = 0
     blocks_found = 0
-    # Randomize the starting nonce so multiple miners with the same key don't collide.
-    nonce = random.randint(0, 2**32)
+    nonce = random.randint(0, 2**48)
     t0 = time.monotonic()
 
     with Live(console=console, refresh_per_second=4) as live:
@@ -290,6 +308,10 @@ def main() -> int:
             difficulty = contract.functions.difficulty().call()
             target = (2**256 - 1) // difficulty
             total = contract.functions.totalMined().call()
+
+            # Randomize nonce on each new work block so parallel miners
+            # don't duplicate effort and to keep nonces in a sane range.
+            nonce = random.randint(0, 2**48)
 
             found_nonce = None
             batches_since_block_check = 0

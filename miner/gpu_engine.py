@@ -211,7 +211,12 @@ def work_block_bytes(work_block: int) -> np.ndarray:
 
 
 def _auto_batch_size() -> int:
-    """Pick a batch large enough to saturate the GPU (small batches leave SMs idle)."""
+    """Pick a batch large enough to keep the GPU clocked at full boost.
+
+    Larger batches = longer kernel runs = driver keeps GPU in P0 state.
+    For RTX 4060 (8 GB) 512 M hashes takes ~0.75 s at full speed — enough
+    to prevent the driver from clocking down between launches.
+    """
     env = os.getenv("USST_GPU_BATCH_SIZE", "").strip()
     if env:
         return max(1 << 20, int(env))
@@ -219,23 +224,19 @@ def _auto_batch_size() -> int:
         _, _, total = cuda.current_context().get_memory_info()
         gb = total / (1024**3)
         if gb >= 16:
-            return 1 << 28
+            return 1 << 30   # 1 B
         if gb >= 8:
-            return 1 << 27
+            return 1 << 29   # 512 M  (was 128 M)
         if gb >= 6:
-            return 1 << 26
-        return 1 << 25
+            return 1 << 28   # 256 M  (was 64 M)
+        return 1 << 27       # 128 M
     except Exception:
-        return 1 << 27
+        return 1 << 29
 
 
 def _threads_per_block() -> int:
     env = os.getenv("USST_GPU_THREADS", "").strip()
     return int(env) if env else 256
-
-
-def _stream_count() -> int:
-    return max(1, min(4, int(os.getenv("USST_GPU_STREAMS", "2"))))
 
 
 _THREADS_PER_BLOCK = _threads_per_block()
@@ -253,7 +254,17 @@ def _cuda_works() -> bool:
 
 
 class GPUSearcher:
-    """CUDA-based nonce searcher with pre-allocated device buffers."""
+    """CUDA-based nonce searcher with true double-buffer pipelining.
+
+    Two CUDA streams alternate so the GPU is always computing while the CPU
+    processes the previous batch's result.  The sequence is:
+
+        Stream A: [==K0==]       [==K2==]       [==K4==]
+        Stream B:       [==K1==]       [==K3==]
+        CPU:      launch  sync-A  launch  sync-B  launch  sync-A ...
+
+    The GPU is never idle between batch submissions.
+    """
 
     def __init__(self) -> None:
         if not _cuda_works():
@@ -261,20 +272,50 @@ class GPUSearcher:
         dev = cuda.get_current_device()
         self.device_name = dev.name.decode()
         self.batch_size = _auto_batch_size()
-        self.stream_count = _stream_count()
-        self._streams = self.stream_count
+        # Double-buffer always uses exactly 2 streams regardless of env var.
+        self.stream_count = 2
         self._tpb = _threads_per_block()
+        self._blocks = (self.batch_size + self._tpb - 1) // self._tpb
 
-        # Pre-allocate device buffers once; reuse across batches.
+        # Pre-allocate device buffers once.
         self._miner_dev = cuda.device_array(20, dtype=np.uint8)
         self._work_dev = cuda.device_array(32, dtype=np.uint8)
-        self._result_devs = [
-            cuda.device_array(1, dtype=np.int64) for _ in range(self._streams)
-        ]
-        self._cuda_streams = [cuda.stream() for _ in range(self._streams)]
+        self._result_devs = [cuda.device_array(1, dtype=np.int64) for _ in range(2)]
+        self._cuda_streams = [cuda.stream() for _ in range(2)]
         self._sentinel = np.array([np.iinfo(np.int64).max], dtype=np.int64)
+
         self._last_miner: Optional[str] = None
         self._last_work_block: Optional[int] = None
+
+        # Double-buffer state: which slot is the "hot" (already-launched) one.
+        self._hot: int = -1          # -1 = no prefetch in flight
+        self._hot_nonce: int = 0
+        self._hot_t: tuple = (0, 0, 0, 0)
+
+    def _launch(self, slot: int, nonce: int, t0: int, t1: int, t2: int, t3: int) -> None:
+        stream = self._cuda_streams[slot]
+        result_dev = self._result_devs[slot]
+        result_dev.copy_to_device(self._sentinel, stream=stream)
+        usst_mine_kernel[self._blocks, self._tpb, stream](
+            self._miner_dev,
+            self._work_dev,
+            np.uint64(nonce),
+            np.uint64(self.batch_size),
+            np.uint64(t0),
+            np.uint64(t1),
+            np.uint64(t2),
+            np.uint64(t3),
+            result_dev,
+        )
+
+    def _collect(self, slot: int, miner: str, work_block: int, target: int) -> Optional[int]:
+        self._cuda_streams[slot].synchronize()
+        val = int(self._result_devs[slot].copy_to_host()[0])
+        if val == np.iinfo(np.int64).max:
+            return None
+        if hash_work(miner, val, work_block) < target:
+            return val
+        return None
 
     def search(
         self,
@@ -285,46 +326,48 @@ class GPUSearcher:
     ) -> tuple[Optional[int], int]:
         t0, t1, t2, t3 = target_to_limbs(target)
 
+        ctx_changed = False
         if miner != self._last_miner:
             cuda.to_device(miner_address_bytes(miner), to=self._miner_dev)
             self._last_miner = miner
+            ctx_changed = True
         if work_block != self._last_work_block:
             cuda.to_device(work_block_bytes(work_block), to=self._work_dev)
             self._last_work_block = work_block
+            ctx_changed = True
 
-        chunk = self.batch_size // self._streams
-        best = np.iinfo(np.int64).max
-        offset = np.uint64(start_nonce)
+        if ctx_changed:
+            # Discard any in-flight prefetch — its nonce/context is stale.
+            self._hot = -1
 
-        for i in range(self._streams):
-            stream = self._cuda_streams[i]
-            result_dev = self._result_devs[i]
-            result_dev.copy_to_device(self._sentinel)
-            blocks = (chunk + self._tpb - 1) // self._tpb
-            usst_mine_kernel[blocks, self._tpb, stream](
-                self._miner_dev,
-                self._work_dev,
-                offset,
-                np.uint64(chunk),
-                np.uint64(t0),
-                np.uint64(t1),
-                np.uint64(t2),
-                np.uint64(t3),
-                result_dev,
-            )
-            offset += np.uint64(chunk)
+        if self._hot == -1:
+            # Cold start: launch slot 0, prefetch slot 1, collect slot 0.
+            self._launch(0, start_nonce, t0, t1, t2, t3)
+            prefetch_nonce = start_nonce + self.batch_size
+            self._launch(1, prefetch_nonce, t0, t1, t2, t3)
+            self._hot = 1
+            self._hot_nonce = prefetch_nonce
+            self._hot_t = (t0, t1, t2, t3)
 
-        for stream in self._cuda_streams:
-            stream.synchronize()
+            result = self._collect(0, miner, work_block, target)
+            return result, self.batch_size
 
-        for result_dev in self._result_devs:
-            candidate = int(result_dev.copy_to_host()[0])
-            if candidate < best:
-                best = candidate
+        # Hot path: slot self._hot already running from the previous call.
+        # Immediately launch the NEXT prefetch on the OTHER slot so the GPU
+        # keeps running while we sync and copy.
+        prev_hot = self._hot
+        next_slot = 1 - prev_hot
+        next_nonce = self._hot_nonce + self.batch_size
+        self._launch(next_slot, next_nonce, t0, t1, t2, t3)
 
-        if best != np.iinfo(np.int64).max and hash_work(miner, best, work_block) < target:
-            return best, self.batch_size
-        return None, self.batch_size
+        # Now collect the previously hot slot.
+        result = self._collect(prev_hot, miner, work_block, target)
+
+        self._hot = next_slot
+        self._hot_nonce = next_nonce
+        self._hot_t = (t0, t1, t2, t3)
+
+        return result, self.batch_size
 
 
 def gpu_available() -> bool:

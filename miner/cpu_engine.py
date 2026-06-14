@@ -49,6 +49,11 @@ class CPUSearcher:
             r = fut.result()
             if r is not None and result is None:
                 result = r
+                # Cancel still-pending futures — already-running ones finish in
+                # background but we don't wait for them, saving CPU time.
+                for f in futures:
+                    f.cancel()
+                break
         return result, self.batch_size
 
     def shutdown(self) -> None:
