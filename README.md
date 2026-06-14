@@ -62,6 +62,25 @@ Contract: [`contracts/USSTMine.sol`](contracts/USSTMine.sol)
 
 ---
 
+## DEX — Swap UST ↔ USDT
+
+A **Uniswap V2** fork is live on chain 778889.
+
+| Contract | Address |
+|----------|---------|
+| **DEX UI** | https://147-45-143-23.sslip.io/dex |
+| UniswapV2Factory | `0xbFAe9F1DF838F63eBedB29f54C7c9FA25c16fe06` |
+| UniswapV2Router02 | `0xaD30634417751B8088a5ca3F812d74c3c2331e85` |
+| WUST (Wrapped UST) | `0x63787dE7FEb0beB1b545eB564794b5bCEEB317CF` |
+| USDT (fixed supply) | `0xb7cBe6aFbF7f21798f54A44ca84Cda2D888179ec` |
+| UST/USDT Pair | `0x11e5b927937267F625084CFaF52917E338e2AF44` |
+
+Init code hash: `0x96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f`
+
+Price: **1 UST = 0.10 USDT** · Liquidity: ~51 000 UST + 5 100 USDT
+
+---
+
 ## Registry Status
 
 | Registry | Status | Link |
@@ -70,6 +89,7 @@ Contract: [`contracts/USSTMine.sol`](contracts/USSTMine.sol)
 | DefiLlama Chainlist | ✅ Merged | [PR #2830](https://github.com/DefiLlama/chainlist/pull/2830) |
 | wevm/viem | ⏳ Pending review | [PR #4721](https://github.com/wevm/viem/pull/4721) |
 | blockscout/chainscout | ⏳ Pending review | [PR #242](https://github.com/blockscout/chainscout/pull/242) |
+| GeckoTerminal | ⏳ Submitted | Network + DEX listing request sent |
 
 Auto-discoverable in **MetaMask**, **WalletConnect**, **Rainbow**, **wagmi**, **chainid.network**
 
@@ -114,9 +134,10 @@ Auto-discoverable in **MetaMask**, **WalletConnect**, **Rainbow**, **wagmi**, **
 - [x] Open-source repository
 - [x] Chain registry submissions (ethereum-lists ✅, Chainlist ✅, viem ⏳, blockscout ⏳)
 - [x] GitHub CI health checks
-- [ ] DEX listing (Uniswap v2 fork on-chain)
+- [x] DEX live — Uniswap V2 fork, UST/USDT pair at https://147-45-143-23.sslip.io/dex
+- [x] GeckoTerminal listing submitted ⏳
+- [ ] GeckoTerminal / CoinGecko listing approved
 - [ ] Bridge to Ethereum mainnet
-- [ ] CoinGecko / CoinMarketCap listing
 
 ---
 
