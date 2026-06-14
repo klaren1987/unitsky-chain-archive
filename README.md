@@ -96,19 +96,6 @@ Auto-discoverable in **MetaMask**, **WalletConnect**, **Rainbow**, **wagmi**, **
 
 ---
 
-## Infrastructure
-
-The network runs on a self-hosted Windows machine behind a VPS gateway:
-
-```
-Internet → VPS (147.45.143.23)
-         → WireGuard tunnel
-         → Windows Docker host
-         → Geth node + Caddy HTTPS proxy
-```
-
-**VPS repair:** If the WireGuard tunnel goes down, run [`scripts/fix-vps-wireguard.sh`](scripts/fix-vps-wireguard.sh) on the VPS.
-
 ---
 
 ## Documentation
